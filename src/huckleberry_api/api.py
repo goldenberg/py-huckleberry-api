@@ -577,6 +577,68 @@ class HuckleberryAPI:
 
         _LOGGER.info("Sleep completed for child %s (duration %ss)", child_uid, duration_sec)
 
+    async def log_sleep(
+        self,
+        child_uid: str,
+        start_time: datetime,
+        end_time: datetime,
+    ) -> None:
+        """Log a completed sleep interval directly (without using the timer).
+
+        Args:
+            child_uid: Child unique identifier
+            start_time: When the sleep started
+            end_time: When the sleep ended
+        """
+        if end_time <= start_time:
+            raise ValueError("end_time must be after start_time")
+
+        _LOGGER.info("Logging sleep interval for child %s", child_uid)
+
+        start_sec = start_time.timestamp()
+        duration_sec = int((end_time - start_time).total_seconds())
+
+        client = await self._get_firestore_client()
+        sleep_ref = client.collection("sleep").document(child_uid)
+
+        intervals_ref = sleep_ref.collection("intervals")
+        interval_id = uuid.uuid4().hex[:16]
+        sleep_interval = FirebaseSleepIntervalData(
+            start=start_sec,
+            duration=duration_sec,
+            offset=await self._get_timezone_offset_minutes(),
+            end_offset=await self._get_timezone_offset_minutes(),
+            lastUpdated=time.time(),
+        )
+
+        try:
+            await intervals_ref.document(interval_id).set(to_firebase_dict(sleep_interval))
+            _LOGGER.info("Created sleep interval: %s", interval_id)
+        except GoogleAPICallError as err:
+            _LOGGER.error("Failed to create sleep interval: %s", err)
+            raise
+
+        current_time = time.time()
+        last_sleep_data = FirebaseLastSleepData(
+            start=start_sec,
+            duration=duration_sec,
+            offset=await self._get_timezone_offset_minutes(),
+        )
+
+        try:
+            await sleep_ref.update(
+                {
+                    "prefs.lastSleep": to_firebase_dict(last_sleep_data),
+                    "prefs.timestamp": {"seconds": current_time},
+                    "prefs.local_timestamp": current_time,
+                }
+            )
+        except GoogleAPICallError as err:
+            _LOGGER.error("Failed to update sleep prefs: %s", err)
+            raise
+
+        _LOGGER.info("Sleep interval logged for child %s (duration %ss)", child_uid, duration_sec)
+
     async def start_nursing(self, child_uid: str, side: FeedSide = "left") -> None:
         """Start nursing tracking."""
         _LOGGER.info("Starting nursing for child %s on %s side", child_uid, side)
